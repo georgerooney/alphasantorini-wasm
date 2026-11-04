@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AlphaSantorini — In-browser NNUE engine</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-title">AlphaSantorini</div>
+      <div class="brand-sub">SANTNNUE03 · 44 Pantheon powers · WebAssembly</div>
+    </div>
+    <div class="spacer"></div>
+    <a class="nav-link" href="/">← lab.georgerooney.com</a>
+    <span class="chip" id="engine-chip">Loading Wasm…</span>
+  </header>
+
+  <main class="layout">
+    <section class="card board-card">
+      <div class="card-head full-width">
+        <span class="kick">Arena</span>
+        <h3 id="status">Starting game…</h3>
+        <span class="aside" id="turn-info">Turn 1</span>
+      </div>
+
+      <div class="board-container">
+        <svg id="board" viewBox="0 0 500 500" role="img" aria-label="AlphaSantorini 5x5 board"></svg>
+      </div>
+
+      <div class="hint-line" id="instructions">Place your first worker on an empty square.</div>
+      <div class="action-bar" id="action-bar"></div>
+      <div class="gods-line" id="gods-line"></div>
+      <div class="gods-rules" id="gods-rules"></div>
+    </section>
+
+    <aside class="stack">
+      <section class="card">
+        <div class="card-head">
+          <span class="kick">Setup</span>
+          <h3>Match configuration</h3>
+        </div>
+        <div class="field">
+          <label>You play</label>
+          <div class="seg" id="side-seg">
+            <button type="button" data-side="0" class="active">First (Navy)</button>
+            <button type="button" data-side="1">Second (Ochre)</button>
+          </div>
+        </div>
+        <div class="field">
+          <label for="human-god">Your power</label>
+          <select id="human-god"></select>
+        </div>
+        <div class="field">
+          <label for="engine-god">Engine power</label>
+          <select id="engine-god"></select>
+        </div>
+        <div class="split-fields">
+          <div class="field">
+            <label for="time-ms">Search budget (ms)</label>
+            <input id="time-ms" type="number" min="15" max="3000" step="15" value="150">
+          </div>
+          <div class="field">
+            <label for="multipv">Candidate lines</label>
+            <select id="multipv">
+              <option value="1">Top 1</option>
+              <option value="3" selected>Top 3</option>
+              <option value="5">Top 5</option>
+            </select>
+          </div>
+        </div>
+        <div class="row wrap">
+          <button type="button" class="btn primary" id="new-game">New game</button>
+          <button type="button" class="btn" id="undo" disabled>Undo</button>
+          <button type="button" class="btn" id="hint" disabled>Hint</button>
+          <button type="button" class="btn" id="analyze" disabled>Analyze</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <span class="kick">Engine</span>
+          <h3>Search telemetry</h3>
+        </div>
+        <dl class="kv" id="analysis">
+          <dt>Evaluation</dt><dd id="an-eval">—</dd>
+          <dt>Search depth</dt><dd id="an-depth">—</dd>
+          <dt>Nodes searched</dt><dd id="an-nodes">—</dd>
+          <dt>Search latency</dt><dd id="an-ms">—</dd>
+          <dt>Principal line</dt><dd id="an-pv" class="mono">—</dd>
+        </dl>
+        <table class="pv-table hidden" id="pv-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Move</th>
+              <th>Eval</th>
+              <th>Line</th>
+            </tr>
+          </thead>
+          <tbody id="pv-body"></tbody>
+        </table>
+        <div class="banner forest hidden" id="hint-banner"></div>
+        <div class="banner crimson hidden" id="error"></div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <span class="kick">History</span>
+          <h3>Move record &amp; position hex</h3>
+        </div>
+        <ol class="log" id="log"></ol>
+        <div class="hex-row">
+          <input id="state-hex" class="mono" type="text" spellcheck="false" aria-label="102-character state hex" placeholder="102-char state hex">
+          <button type="button" class="btn small" id="copy-hex">Copy</button>
+          <button type="button" class="btn small" id="load-hex">Load</button>
+          <span class="hex-status" id="hex-status"></span>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+  <footer class="footer" id="attribution">
+    <span><em>Santorini</em> was designed by Gordon Hamilton and is published by <a href="https://roxley.com/products/santorini" rel="noopener noreferrer">Roxley Games</a>.</span>
+    <span>Unofficial single-player AI research sandbox (no multiplayer); clean-room WebAssembly engine.</span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
