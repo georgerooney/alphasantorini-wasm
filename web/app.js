@@ -72,7 +72,11 @@ function sendWorker(type, payload = {}) {
 }
 
 let view = null;
-let humanSide = 0;
+// `gameMode`: "p0" (human plays First/Navy), "p1" (human plays Second/Ochre), or "bots" (Bot vs. Bot).
+let gameMode = "p0";
+let botsPaused = false;
+// Monotonic epoch token so switching modes, starting a new game, or undoing cleanly cancels any in-flight bot loop.
+let runEpoch = 0;
 let busy = false;
 let sel = { from: null, to: null };
 let lastSubTurnWorkerSq = null;
@@ -85,6 +89,36 @@ let activePvRank = null;
 let lastAnalysis = null;
 
 const sqName = (sq) => (sq !== undefined && sq !== null && sq < 25 ? "abcde"[sq % 5] + (5 - Math.floor(sq / 5)) : "?");
+const activeHumanSide = () => (gameMode === "p0" ? 0 : gameMode === "p1" ? 1 : -1);
+const isBotSeat = (p) => gameMode === "bots" || p !== activeHumanSide();
+const seatColor = (p) => (p === 0 ? "Navy" : "Ochre");
+const seatBudgetMs = (p) => {
+  const el = $(p === 0 ? "p0-ms" : "p1-ms");
+  const raw = el ? parseInt(el.value, 10) : 150;
+  return Math.max(15, Math.min(5000, Number.isFinite(raw) ? raw : 150));
+};
+
+function syncSeatLabels() {
+  for (const p of [0, 1]) {
+    const bot = isBotSeat(p);
+    const roleEl = $(p === 0 ? "p0-role" : "p1-role");
+    const msLabelEl = $(p === 0 ? "p0-ms-label" : "p1-ms-label");
+    if (roleEl) roleEl.textContent = bot ? "Bot" : "You";
+    if (msLabelEl) msLabelEl.textContent = bot ? "Bot search (ms)" : "Hint / analyze (ms)";
+  }
+  const pauseBtn = $("pause-bots");
+  const stepBtn = $("step-bot");
+  const inBots = gameMode === "bots";
+  if (pauseBtn) {
+    pauseBtn.classList.toggle("hidden", !inBots);
+    pauseBtn.textContent = botsPaused ? "Resume" : "Pause";
+    pauseBtn.disabled = Boolean(view && view.game_over);
+  }
+  if (stepBtn) {
+    stepBtn.classList.toggle("hidden", !inBots);
+    stepBtn.disabled = busy || !botsPaused || !view || Boolean(view.game_over);
+  }
+}
 
 function resetSel() {
   sel = { from: null, to: null };
@@ -94,7 +128,8 @@ function resetSel() {
 }
 
 function humanToMove() {
-  return Boolean(view && !view.game_over && view.current_player === humanSide);
+  const hSide = activeHumanSide();
+  return Boolean(view && !view.game_over && hSide !== -1 && view.current_player === hSide);
 }
 
 function svg(tag, attrs, parent) {
@@ -243,19 +278,20 @@ function renderBoard() {
   const tgs = targets();
   const tgMap = new Map(tgs.map((t) => [t.sq, t]));
 
+  const hSide = activeHumanSide();
   const displayWorkers = [[...view.workers[0]], [...view.workers[1]]];
   const femSq = viewFemaleSq(view);
   const inBuildPhase = humanToMove() && sel.from !== null && sel.to !== null;
   if (inBuildPhase) {
-    const idx = displayWorkers[humanSide].indexOf(sel.from);
+    const idx = displayWorkers[hSide].indexOf(sel.from);
     if (idx !== -1) {
-      if (femSq[humanSide] === sel.from) femSq[humanSide] = sel.to;
-      displayWorkers[humanSide][idx] = sel.to;
+      if (femSq[hSide] === sel.from) femSq[hSide] = sel.to;
+      displayWorkers[hSide][idx] = sel.to;
     }
     // Preview Apollo swap, Minotaur push, or Bia elimination on the opponent worker
     const sample = legalFor((a) => (a.kind === "turn" || a.kind === "zeus") && a.from === sel.from && a.to === sel.to)[0];
     if (sample && sample.forced_from !== undefined) {
-      const opp = 1 - humanSide;
+      const opp = 1 - hSide;
       const oIdx = displayWorkers[opp].indexOf(sample.forced_from);
       if (oIdx !== -1) {
         const dst = sample.forced_to !== undefined && sample.forced_to !== null ? sample.forced_to : 255;
@@ -310,7 +346,7 @@ function renderBoard() {
         cy: y + CELL / 2,
         r: 19,
         class: "worker-ghost",
-        stroke: humanSide === 0 ? "var(--p0-color)" : "var(--p1-color)",
+        stroke: hSide === 0 ? "var(--p0-color)" : "var(--p1-color)",
       }, boardEl);
     }
 
@@ -318,11 +354,11 @@ function renderBoard() {
       for (const wsq of displayWorkers[p]) {
         if (wsq === sq && wsq !== 255) {
           const isSelected = sel.from === sq && !inBuildPhase;
-          const isPreview = inBuildPhase && sq === sel.to && p === humanSide;
+          const isPreview = inBuildPhase && sq === sel.to && p === hSide;
           if (isSelected || isPreview) {
             svg("circle", { cx: x + CELL / 2, cy: y + CELL / 2, r: 25, class: "selected-ring" }, boardEl);
           }
-          const selectable = !inBuildPhase && p === humanSide && movable.has(sq);
+          const selectable = !inBuildPhase && p === hSide && movable.has(sq);
           const cls = `worker-p${p}${isPreview ? " worker-preview" : ""}${selectable ? " selectable" : ""}`;
           svg("circle", { cx: x + CELL / 2, cy: y + CELL / 2, r: 19, class: cls, "data-sq": sq }, boardEl);
 
@@ -411,14 +447,16 @@ function renderAnalysisPanel() {
     return;
   }
 
-  const persp = lastAnalysis.perspective !== undefined ? lastAnalysis.perspective : (1 - humanSide);
-  const sign = persp === humanSide ? 1 : -1;
+  const inBots = gameMode === "bots";
+  const refSide = inBots ? 0 : activeHumanSide();
+  const persp = lastAnalysis.perspective !== undefined ? lastAnalysis.perspective : view.current_player;
+  const sign = persp === refSide ? 1 : -1;
   const v = sign * lastAnalysis.value;
   if (lastAnalysis.mate_in_plies !== undefined && lastAnalysis.mate_in_plies !== null) {
-    const who = v >= 0 ? "You" : "Engine";
+    const who = inBots ? (v >= 0 ? "Navy" : "Ochre") : (v >= 0 ? "You" : "Bot");
     evalEl.textContent = `${who} mate in ${Math.ceil(lastAnalysis.mate_in_plies / 2)}`;
   } else {
-    evalEl.textContent = `${fmtScore(v)} for you`;
+    evalEl.textContent = inBots ? `${fmtScore(v)} (Navy)` : `${fmtScore(v)} for you`;
   }
   evalEl.classList.add(v >= 0 ? "pos" : "neg");
 
@@ -482,9 +520,11 @@ function updateChrome() {
   actBar.replaceChildren();
   godsLine.replaceChildren();
   godsRules.replaceChildren();
+  syncSeatLabels();
 
   if (!view) return;
 
+  const hSide = activeHumanSide();
   const hexInput = $("state-hex");
   if (hexInput && view.state_hex && document.activeElement !== hexInput) {
     hexInput.value = view.state_hex;
@@ -492,24 +532,24 @@ function updateChrome() {
 
   for (const p of [0, 1]) {
     const g = godInfo(view.gods[p]);
-    const role = p === humanSide ? "You" : "Engine";
-    const color = p === 0 ? "Navy" : "Ochre";
+    const color = seatColor(p);
+    const role = isBotSeat(p) ? `Bot (${seatBudgetMs(p)} ms)` : "You";
     const badge = document.createElement("span");
     badge.className = `god-badge p${p}`;
-    badge.textContent = `${role} (${color}): ${g.name}`;
+    badge.textContent = `${color} · ${role}: ${g.name}`;
     badge.title = g.desc;
     godsLine.appendChild(badge);
 
     if (view.power_used && view.power_used[p]) {
       const chip = document.createElement("span");
       chip.className = "chip";
-      chip.textContent = `${role} Hero spent`;
+      chip.textContent = `${color} Hero spent`;
       godsLine.appendChild(chip);
     }
     if (view.restricted && view.restricted[p]) {
       const rChip = document.createElement("span");
       rChip.className = "chip crimson";
-      rChip.textContent = `${role}: no moving up (Athena)`;
+      rChip.textContent = `${color}: no moving up (Athena)`;
       godsLine.appendChild(rChip);
     }
 
@@ -518,12 +558,21 @@ function updateChrome() {
     godsRules.appendChild(ruleLine);
   }
 
-  turnEl.textContent = `Ply ${view.turn_count} · ${humanSide === 0 ? "you play first" : "you play second"}`;
+  turnEl.textContent = gameMode === "bots"
+    ? `Ply ${view.turn_count} · Bot vs. Bot`
+    : `Ply ${view.turn_count} · you play ${hSide === 0 ? "Navy (1st)" : "Ochre (2nd)"}`;
   renderAnalysisPanel();
 
   if (view.game_over) {
-    const won = view.winner === humanSide;
-    statusEl.textContent = won ? "Game over — you win" : "Game over — engine wins";
+    if (gameMode === "bots") {
+      const w = view.winner;
+      statusEl.textContent = w === 0 || w === 1
+        ? `Game over — ${seatColor(w)} (${godInfo(view.gods[w]).name}) wins`
+        : "Game over";
+    } else {
+      const won = view.winner === hSide;
+      statusEl.textContent = won ? "Game over — you win" : `Game over — ${seatColor(1 - hSide)} bot wins`;
+    }
     instrEl.textContent = "Start a new game, undo, or copy the position hex.";
     $("undo").disabled = busy || !view.can_undo;
     $("hint").disabled = true;
@@ -535,15 +584,28 @@ function updateChrome() {
   $("hint").disabled = busy || !humanToMove();
   $("analyze").disabled = busy;
 
+  if (gameMode === "bots") {
+    const mover = view.current_player;
+    if (botsPaused) {
+      statusEl.textContent = `Paused — ${seatColor(mover)} to move`;
+      instrEl.textContent = "Click Step to advance one bot turn, Analyze to inspect lines, or Resume.";
+    } else {
+      statusEl.textContent = `Bot thinking (${seatColor(mover)} · ${seatBudgetMs(mover)} ms)…`;
+      instrEl.textContent = "Bots playing — click Pause at any time to step or analyze.";
+    }
+    return;
+  }
+
   if (!humanToMove()) {
-    statusEl.textContent = "Engine thinking…";
+    const mover = view.current_player;
+    statusEl.textContent = `Bot thinking (${seatColor(mover)} · ${seatBudgetMs(mover)} ms)…`;
     instrEl.textContent = "Searching alpha-beta variations…";
     return;
   }
 
   statusEl.textContent = view.in_sub_turn
-    ? `Your move — continued (${humanSide === 0 ? "Navy" : "Ochre"})`
-    : `Your move (${humanSide === 0 ? "Navy" : "Ochre"})`;
+    ? `Your move — continued (${seatColor(hSide)})`
+    : `Your move (${seatColor(hSide)})`;
 
   if (view.setup) {
     instrEl.textContent = "Setup: click an empty highlighted square to place a worker.";
@@ -552,7 +614,7 @@ function updateChrome() {
 
   if (domeChoice) {
     const targetHeight = view.height[domeChoice.sq];
-    const dName = godInfo(view.gods[humanSide]).name;
+    const dName = godInfo(view.gods[hSide]).name;
     instrEl.textContent = `${dName}: build a block (level ${targetHeight + 1}) or a dome on ${sqName(domeChoice.sq)}.`;
     actBar.appendChild(makeBtn(`Build block (level ${targetHeight + 1})`, "btn primary", () => {
       const act = domeChoice.block;
@@ -587,7 +649,7 @@ function updateChrome() {
   if (sel.from !== null && sel.to !== null) {
     const moveOnly = view.legal_actions.find((a) => a.kind === "move" && a.from === sel.from && a.to === sel.to);
     if (moveOnly) {
-      actBar.appendChild(makeBtn(moveOnlyButtonLabel(view.gods[humanSide]), "btn primary", () => doAction(moveOnly.action)));
+      actBar.appendChild(makeBtn(moveOnlyButtonLabel(view.gods[hSide]), "btn primary", () => doAction(moveOnly.action)));
     }
     const zeusSelf = view.legal_actions.find((a) => a.kind === "zeus" && a.from === sel.from && a.to === sel.to);
     if (zeusSelf) {
@@ -624,6 +686,7 @@ function updateChrome() {
 
 function onSquareClick(sq) {
   if (!view || !humanToMove() || busy) return;
+  const hSide = activeHumanSide();
 
   if (view.setup) {
     const a = view.legal_actions.find((act) => act.kind === "place" && act.square === sq);
@@ -680,7 +743,7 @@ function onSquareClick(sq) {
   }
 
   // Worker selection
-  const isOwnWorker = view.workers[humanSide].includes(sq);
+  const isOwnWorker = view.workers[hSide].includes(sq);
   const movables = movableWorkers();
   if (isOwnWorker && movables.has(sq)) {
     sel = sel.from === sq ? { from: null, to: null } : { from: sq, to: null };
@@ -770,7 +833,16 @@ function logMove(msg) {
   logEl.prepend(li);
 }
 
+function setEngineReadyChip() {
+  const chip = $("engine-chip");
+  if (!chip) return;
+  chip.textContent = "Wasm ready";
+  chip.className = "chip ready";
+}
+
 async function doAction(action) {
+  const epoch = ++runEpoch;
+  const hSide = activeHumanSide();
   const descBefore = view && view.legal_actions ? view.legal_actions.find((a) => a.action === action) : null;
   busy = true;
   resetSel();
@@ -781,8 +853,9 @@ async function doAction(action) {
 
   try {
     const state = await sendWorker("apply_action", { action });
+    if (epoch !== runEpoch) return;
     if (descBefore) {
-      logMove(`You: ${formatStep(descBefore)}`);
+      logMove(`You (${seatColor(hSide)}): ${formatStep(descBefore)}`);
       lastSubTurnWorkerSq = descBefore.to !== undefined ? descBefore.to : (descBefore.from ?? null);
     } else {
       lastSubTurnWorkerSq = null;
@@ -792,45 +865,86 @@ async function doAction(action) {
     showError("");
     renderBoard();
 
-    if (!view.game_over && view.current_player !== humanSide) {
-      await runAiTurn();
+    if (!view.game_over && isBotSeat(view.current_player)) {
+      await runAiTurn(epoch);
     }
   } catch (err) {
-    showError(err.message || String(err));
+    if (epoch === runEpoch) showError(err.message || String(err));
   } finally {
-    busy = false;
-    renderBoard();
+    if (epoch === runEpoch) {
+      busy = false;
+      setEngineReadyChip();
+      renderBoard();
+    }
   }
 }
 
-async function runAiTurn() {
-  while (view && !view.game_over && view.current_player !== humanSide) {
+async function runAiTurn(epoch, { singleStep = false } = {}) {
+  while (
+    epoch === runEpoch &&
+    view &&
+    !view.game_over &&
+    isBotSeat(view.current_player) &&
+    (singleStep || !botsPaused || gameMode !== "bots")
+  ) {
+    const mover = view.current_player;
+    const timeMs = seatBudgetMs(mover);
     const chip = $("engine-chip");
-    chip.textContent = "Searching…";
+    chip.textContent = `Searching (${seatColor(mover)} · ${timeMs} ms)…`;
     chip.className = "chip thinking";
+    renderBoard();
 
-    const timeMs = parseInt($("time-ms").value, 10) || 150;
     const { search, state } = await sendWorker("ai_turn", { time_ms: timeMs });
+    if (epoch !== runEpoch) return;
+
     view = state;
     lastAnalysis = search;
     if (search && search.steps && search.steps.length) {
-      logMove(`Engine: ${search.steps.map(formatStep).join(", ")}`);
+      const prefix = gameMode === "bots"
+        ? `${seatColor(mover)} (${timeMs} ms)`
+        : `Bot (${seatColor(mover)} · ${timeMs} ms)`;
+      logMove(`${prefix}: ${search.steps.map(formatStep).join(", ")}`);
     }
 
-    chip.textContent = "Wasm ready";
-    chip.className = "chip ready";
+    setEngineReadyChip();
+    renderBoard();
+
+    if (singleStep) break;
+    // In interactive browsers, yield 1 paint frame between Bot-vs-Bot turns so each move renders smoothly
+    // and Pause clicks register cleanly without blocking; skipped in headless Node test VMs.
+    if (gameMode === "bots" && !botsPaused && !view.game_over && typeof window.requestAnimationFrame === "function") {
+      await new Promise((r) => window.requestAnimationFrame(() => setTimeout(r, 40)));
+    }
+  }
+}
+
+async function resumeOrStepBots({ singleStep = false } = {}) {
+  if (busy || !view || view.game_over || !isBotSeat(view.current_player)) return;
+  const epoch = ++runEpoch;
+  busy = true;
+  hintAction = null;
+  activePvRank = null;
+  try {
+    await runAiTurn(epoch, { singleStep });
+  } catch (err) {
+    if (epoch === runEpoch) showError(err.message || String(err));
+  } finally {
+    if (epoch === runEpoch) {
+      busy = false;
+      setEngineReadyChip();
+      renderBoard();
+    }
   }
 }
 
 function syncControlsFromState() {
   if (!view) return;
-  const hGod = view.gods[humanSide];
-  const eGod = view.gods[1 - humanSide];
-  $("human-god").value = String(hGod);
-  $("engine-god").value = String(eGod);
+  $("p0-god").value = String(view.gods[0]);
+  $("p1-god").value = String(view.gods[1]);
 }
 
 async function startNewGame() {
+  const epoch = ++runEpoch;
   busy = true;
   resetSel();
   hintAction = null;
@@ -839,30 +953,36 @@ async function startNewGame() {
   $("hint-banner").classList.add("hidden");
   $("log").replaceChildren();
   showHexStatus("");
+  syncSeatLabels();
 
-  const g0 = parseInt($("human-god").value, 10) || 0;
-  const g1 = parseInt($("engine-god").value, 10) || 0;
-  const god0 = humanSide === 0 ? g0 : g1;
-  const god1 = humanSide === 0 ? g1 : g0;
+  const god0 = parseInt($("p0-god").value, 10) || 0;
+  const god1 = parseInt($("p1-god").value, 10) || 0;
 
   try {
-    view = await sendWorker("new_game", { god0, god1 });
+    const state = await sendWorker("new_game", { god0, god1 });
+    if (epoch !== runEpoch) return;
+    view = state;
     showError("");
     renderBoard();
 
-    if (!view.game_over && view.current_player !== humanSide) {
-      await runAiTurn();
+    if (!view.game_over && isBotSeat(view.current_player) && !(gameMode === "bots" && botsPaused)) {
+      await runAiTurn(epoch);
     }
   } catch (err) {
-    showError(err.message || String(err));
+    if (epoch === runEpoch) showError(err.message || String(err));
   } finally {
-    busy = false;
-    renderBoard();
+    if (epoch === runEpoch) {
+      busy = false;
+      setEngineReadyChip();
+      renderBoard();
+    }
   }
 }
 
 async function undo() {
   if (busy || !view || !view.can_undo) return;
+  const epoch = ++runEpoch;
+  if (gameMode === "bots") botsPaused = true;
   busy = true;
   resetSel();
   hintAction = null;
@@ -871,23 +991,30 @@ async function undo() {
 
   try {
     let state = await sendWorker("undo");
-    while (state && state.can_undo && !state.game_over && state.current_player !== humanSide) {
-      state = await sendWorker("undo");
+    if (gameMode !== "bots") {
+      const hSide = activeHumanSide();
+      while (state && state.can_undo && !state.game_over && state.current_player !== hSide) {
+        state = await sendWorker("undo");
+      }
     }
+    if (epoch !== runEpoch) return;
     view = state;
     syncControlsFromState();
     showError("");
     renderBoard();
   } catch (err) {
-    showError(err.message || String(err));
+    if (epoch === runEpoch) showError(err.message || String(err));
   } finally {
-    busy = false;
-    renderBoard();
+    if (epoch === runEpoch) {
+      busy = false;
+      renderBoard();
+    }
   }
 }
 
 async function requestHint() {
   if (busy || !humanToMove()) return;
+  const epoch = ++runEpoch;
   busy = true;
   const banner = $("hint-banner");
   banner.textContent = "Searching candidate moves…";
@@ -895,9 +1022,10 @@ async function requestHint() {
   renderBoard();
 
   try {
-    const timeMs = parseInt($("time-ms").value, 10) || 150;
+    const timeMs = seatBudgetMs(view.current_player);
     const multiPv = parseInt($("multipv").value, 10) || 3;
     const res = await sendWorker("hint", { time_ms: timeMs, multi_pv: multiPv });
+    if (epoch !== runEpoch) return;
     lastAnalysis = res;
     if (res && res.steps && res.steps.length) {
       const plan = res.steps.map(formatStep).join(", ");
@@ -906,22 +1034,26 @@ async function requestHint() {
       banner.textContent = `Engine suggests ${plan} (${fmtScore(res.value)}, depth ${res.depth}).`;
     }
   } catch (err) {
-    banner.textContent = `Hint error: ${err.message}`;
+    if (epoch === runEpoch) banner.textContent = `Hint error: ${err.message}`;
   } finally {
-    busy = false;
-    renderBoard();
+    if (epoch === runEpoch) {
+      busy = false;
+      renderBoard();
+    }
   }
 }
 
 async function runAnalyze() {
   if (busy || !view || view.game_over) return;
+  const epoch = ++runEpoch;
   busy = true;
   renderBoard();
 
   try {
-    const timeMs = parseInt($("time-ms").value, 10) || 150;
+    const timeMs = seatBudgetMs(view.current_player);
     const multiPv = parseInt($("multipv").value, 10) || 3;
     const res = await sendWorker("analyze", { time_ms: timeMs, multi_pv: multiPv });
+    if (epoch !== runEpoch) return;
     lastAnalysis = res;
     if (res && res.lines && res.lines.length) {
       activePvRank = res.lines[0].rank;
@@ -929,10 +1061,12 @@ async function runAnalyze() {
     }
     showError("");
   } catch (err) {
-    showError(err.message || String(err));
+    if (epoch === runEpoch) showError(err.message || String(err));
   } finally {
-    busy = false;
-    renderBoard();
+    if (epoch === runEpoch) {
+      busy = false;
+      renderBoard();
+    }
   }
 }
 
@@ -957,24 +1091,31 @@ async function loadHex() {
     showError("Paste a 102-character state hex string first.");
     return;
   }
+  const epoch = ++runEpoch;
+  if (gameMode === "bots") botsPaused = true;
   busy = true;
   resetSel();
   hintAction = null;
   activePvRank = null;
   lastAnalysis = null;
   try {
-    view = await sendWorker("set_hex", { hex });
+    const state = await sendWorker("set_hex", { hex });
+    if (epoch !== runEpoch) return;
+    view = state;
     syncControlsFromState();
     showError("");
     showHexStatus("Loaded");
-    if (!view.game_over && view.current_player !== humanSide) {
-      await runAiTurn();
+    if (!view.game_over && isBotSeat(view.current_player) && !(gameMode === "bots" && botsPaused)) {
+      await runAiTurn(epoch);
     }
   } catch (err) {
-    showError(err.message || String(err));
+    if (epoch === runEpoch) showError(err.message || String(err));
   } finally {
-    busy = false;
-    renderBoard();
+    if (epoch === runEpoch) {
+      busy = false;
+      setEngineReadyChip();
+      renderBoard();
+    }
   }
 }
 
@@ -983,7 +1124,7 @@ async function loadHex() {
 // ---------------------------------------------------------------------------
 
 function populateGodSelects() {
-  for (const id of ["human-god", "engine-god"]) {
+  for (const id of ["p0-god", "p1-god"]) {
     const selEl = $(id);
     selEl.replaceChildren();
     for (const [label, isIntro] of [["Standard & intro (11)", true], ["Pantheon (33)", false]]) {
@@ -1011,22 +1152,51 @@ function initEventHandlers() {
     }
   });
 
-  $("new-game").onclick = startNewGame;
+  $("new-game").onclick = () => {
+    botsPaused = false;
+    startNewGame();
+  };
+  $("pause-bots").onclick = () => {
+    if (gameMode !== "bots") return;
+    botsPaused = !botsPaused;
+    syncSeatLabels();
+    if (!botsPaused && !busy && view && !view.game_over) {
+      resumeOrStepBots({ singleStep: false });
+    } else if (!busy) {
+      renderBoard();
+    }
+  };
+  $("step-bot").onclick = () => {
+    if (gameMode !== "bots" || !botsPaused || busy || !view || view.game_over) return;
+    resumeOrStepBots({ singleStep: true });
+  };
   $("undo").onclick = undo;
   $("hint").onclick = requestHint;
   $("analyze").onclick = runAnalyze;
   $("copy-hex").onclick = copyHex;
   $("load-hex").onclick = loadHex;
 
-  const segBtns = $("side-seg").querySelectorAll("button");
+  for (const id of ["p0-ms", "p1-ms"]) {
+    const el = $(id);
+    if (el) {
+      el.onchange = () => {
+        if (!busy && view) updateChrome();
+      };
+    }
+  }
+
+  const segBtns = $("mode-seg").querySelectorAll("button");
   segBtns.forEach((btn) => {
     btn.onclick = () => {
       segBtns.forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
-      humanSide = parseInt(btn.getAttribute("data-side"), 10) || 0;
+      gameMode = btn.getAttribute("data-mode") || "p0";
+      botsPaused = false;
+      syncSeatLabels();
       startNewGame();
     };
   });
+  syncSeatLabels();
 }
 
 async function boot() {
@@ -1047,8 +1217,7 @@ async function boot() {
   const chip = $("engine-chip");
   try {
     await sendWorker("init");
-    chip.textContent = "Wasm ready";
-    chip.className = "chip ready";
+    setEngineReadyChip();
     await startNewGame();
   } catch (err) {
     chip.textContent = "Load error";

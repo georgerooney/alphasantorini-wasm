@@ -19,7 +19,9 @@ use std::sync::Arc;
 static EMBEDDED_NNUE_BYTES: &[u8] = include_bytes!("../weights.nnue");
 
 thread_local! {
-    static ENGINE: RefCell<Option<SearchEngine>> = const { RefCell::new(None) };
+    // Separate SearchEngine (TT + killer/history tables) per player seat so Bot-vs-Bot
+    // matches with asymmetric time budgets never leak deep TT entries across seats.
+    static ENGINES: RefCell<[Option<SearchEngine>; 2]> = const { RefCell::new([None, None]) };
     static GAME: RefCell<Option<CompactSantoriniState>> = const { RefCell::new(None) };
     static HISTORY: RefCell<Vec<CompactSantoriniState>> = const { RefCell::new(Vec::new()) };
     static OUTPUT_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
@@ -353,8 +355,10 @@ pub extern "C" fn santorini_init() -> i32 {
         Ok(n) => Arc::new(n),
         Err(_) => return 0,
     };
-    let engine = SearchEngine::new(nnue, 18); // 262,144 TT entries (~4 MB)
-    ENGINE.with(|e| *e.borrow_mut() = Some(engine));
+    // 131,072 TT entries (~2 MiB) per player = 4 MiB total, sharing the embedded NNUE weights.
+    let eng0 = SearchEngine::new(Arc::clone(&nnue), 17);
+    let eng1 = SearchEngine::new(nnue, 17);
+    ENGINES.with(|e| *e.borrow_mut() = [Some(eng0), Some(eng1)]);
     1
 }
 
@@ -370,8 +374,8 @@ pub extern "C" fn santorini_new_game(god0: u8, god1: u8) -> i32 {
         hist.clear();
         hist.push(state);
     });
-    ENGINE.with(|e| {
-        if let Some(eng) = e.borrow_mut().as_mut() {
+    ENGINES.with(|e| {
+        for eng in e.borrow_mut().iter_mut().flatten() {
             eng.clear();
         }
     });
@@ -435,6 +439,11 @@ pub unsafe extern "C" fn santorini_set_hex(ptr: *const u8, len: usize) -> i32 {
     };
     GAME.with(|g| *g.borrow_mut() = Some(state));
     HISTORY.with(|h| h.borrow_mut().push(state));
+    ENGINES.with(|e| {
+        for eng in e.borrow_mut().iter_mut().flatten() {
+            eng.clear();
+        }
+    });
     1
 }
 
@@ -481,9 +490,10 @@ pub extern "C" fn santorini_search(time_ms: u32, max_nodes: u32, multi_pv: u32) 
         return set_output_json(&serde_json::Value::Null);
     }
 
-    ENGINE.with(|e| {
-        let mut eng_opt = e.borrow_mut();
-        let eng = match eng_opt.as_mut() {
+    let seat = (state.current_player & 1) as usize;
+    ENGINES.with(|e| {
+        let mut engs = e.borrow_mut();
+        let eng = match engs[seat].as_mut() {
             Some(eng) => eng,
             None => return set_output_json(&serde_json::Value::Null),
         };
@@ -554,11 +564,13 @@ pub extern "C" fn santorini_ai_full_turn(time_ms: u32) -> *const u8 {
     let total_budget = time_ms as u64;
     let mut remaining = total_budget;
     let mut total_nodes = 0u64;
-    let mut total_elapsed = 0.0f64;
+    let total_elapsed_init = 0.0f64;
+    let mut total_elapsed = total_elapsed_init;
 
-    ENGINE.with(|e| {
-        let mut eng_opt = e.borrow_mut();
-        let eng = match eng_opt.as_mut() {
+    let seat = (ai_player & 1) as usize;
+    ENGINES.with(|e| {
+        let mut engs = e.borrow_mut();
+        let eng = match engs[seat].as_mut() {
             Some(eng) => eng,
             None => return set_output_json(&serde_json::Value::Null),
         };
@@ -708,5 +720,21 @@ mod tests {
             .find(|d| d.removed_block == Some(1))
             .expect("Ares should describe removed_block = Some(1)");
         assert_eq!(short_move_desc(&rem), "-b5");
+
+        // Verify per-player SearchEngine TT isolation for asymmetric Bot-vs-Bot search budgets
+        assert_eq!(santorini_new_game(GOD_MORTAL, GOD_MORTAL), 1);
+        let root_hash = GAME.with(|g| g.borrow().unwrap().state_hash());
+        let _ = unsafe { read_c_json(santorini_search(15, 0, 1)) };
+        ENGINES.with(|e| {
+            let engs = e.borrow();
+            assert!(
+                engs[0].as_ref().unwrap().tt.probe(root_hash, 0).is_some(),
+                "Player 0 TT should hold the searched root position"
+            );
+            assert!(
+                engs[1].as_ref().unwrap().tt.probe(root_hash, 0).is_none(),
+                "Player 1 TT must remain completely isolated from Player 0's search"
+            );
+        });
     }
 }

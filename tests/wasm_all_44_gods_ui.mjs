@@ -489,10 +489,16 @@ await h.flush(20);
 assert.equal(h.byId.get("error").textContent, "", `Boot error: ${h.byId.get("error").textContent}`);
 assert.match(h.byId.get("engine-chip").textContent, /ready/i);
 
-// Use 15ms AI search budget during tests so 44+ games complete in ~2 seconds
-h.byId.get("time-ms").value = "15";
+// Verify explicit per-player controls (#p0-god, #p1-god, #p0-ms, #p1-ms, #p0-ms-label, #p1-ms-label)
+assert.ok(h.byId.get("p0-ms") && h.byId.get("p1-ms"), "Must expose separate #p0-ms and #p1-ms search budget inputs");
+assert.match(h.byId.get("p0-ms-label").textContent, /hint|analyze/i, "Human seat budget label must clarify Hint / analyze");
+assert.match(h.byId.get("p1-ms-label").textContent, /bot search/i, "Bot seat budget label must clarify Bot search");
 
-// Verify all 44 powers are selectable in #human-god and #engine-god
+// Use 15ms AI search budget during tests so 44+ games complete in ~2 seconds
+h.byId.get("p0-ms").value = "15";
+h.byId.get("p1-ms").value = "15";
+
+// Verify all 44 powers are selectable in #p0-god and #p1-god
 const collectOptionValues = (selNode) => {
   const vals = [];
   const walk = (n) => {
@@ -502,12 +508,14 @@ const collectOptionValues = (selNode) => {
   walk(selNode);
   return vals;
 };
-const humanOpts = collectOptionValues(h.byId.get("human-god"));
+const p0Opts = collectOptionValues(h.byId.get("p0-god"));
+const p1Opts = collectOptionValues(h.byId.get("p1-god"));
 assert.deepEqual(
-  [...humanOpts].sort((a, b) => a - b),
+  [...p0Opts].sort((a, b) => a - b),
   [...SUPPORTED_GODS].sort((a, b) => a - b),
-  "Dropdown must expose all 44 supported gods"
+  "Navy dropdown must expose all 44 supported gods"
 );
+assert.deepEqual(p0Opts, p1Opts, "Ochre dropdown must match Navy dropdown");
 
 async function loadHexFixture(opts) {
   const hex = encodeMidgameHex(opts);
@@ -729,8 +737,8 @@ function playOneHumanAction() {
 }
 
 for (const godId of SUPPORTED_GODS) {
-  h.byId.get("human-god").value = String(godId);
-  h.byId.get("engine-god").value = "0";
+  h.byId.get("p0-god").value = String(godId);
+  h.byId.get("p1-god").value = "0";
   h.byId.get("new-game").click();
   await h.flush(25);
   assert.equal(h.byId.get("error").textContent, "", `New game failed for god ${godId}`);
@@ -758,4 +766,38 @@ for (const godId of SUPPORTED_GODS) {
   assert.ok(postSetupClicks >= 2, `God ${godId} never reached post-setup play`);
 }
 
-console.log(`PASS: All ${SUPPORTED_GODS.length} Pantheon powers, 11 collision scenarios, Multi-PV, and CSP/hygiene checks verified against real alphasantorini.wasm.`);
+// --- Bot vs. Bot Mode with Asymmetric Per-Player Search Budgets + Pause / Step / Resume ---
+const modeBtns = h.byId.get("mode-seg").querySelectorAll("button");
+const botsBtn = modeBtns.find((b) => b.getAttribute("data-mode") === "bots");
+assert.ok(botsBtn, "Expected data-mode='bots' button in #mode-seg");
+
+// Load a midgame position first, switch to Bot vs. Bot paused/stepping or full run
+h.byId.get("p0-god").value = "1"; // Apollo
+h.byId.get("p1-god").value = "4"; // Atlas
+h.byId.get("p0-ms").value = "15";
+h.byId.get("p1-ms").value = "35";
+botsBtn.click();
+
+// Verify both labels read "Bot search (ms)" in Bot-vs-Bot mode
+assert.match(h.byId.get("p0-ms-label").textContent, /bot search/i);
+assert.match(h.byId.get("p1-ms-label").textContent, /bot search/i);
+
+// Pause immediately so we can test single-step (`#step-bot`) before resuming to game over
+h.byId.get("pause-bots").click();
+await h.flush(20);
+assert.match(h.byId.get("status").textContent, /paused|game over/i);
+const logBeforeStep = h.byId.get("log").children.length;
+if (!/game over/i.test(h.byId.get("status").textContent)) {
+  h.byId.get("step-bot").click();
+  await h.flush(20);
+  assert.equal(h.byId.get("log").children.length, logBeforeStep + 1, "Step should advance exactly 1 bot turn while paused");
+  // Resume until full game completion
+  h.byId.get("pause-bots").click();
+  await h.flush(30);
+}
+assert.match(h.byId.get("status").textContent, /game over/i, `Bot-vs-Bot game did not finish: ${h.byId.get("status").textContent}`);
+const botLogs = h.byId.get("log").children.map((li) => li.textContent).join("\n");
+assert.match(botLogs, /Navy \(15 ms\):/, "Move log should record Navy bot with its 15 ms budget");
+assert.match(botLogs, /Ochre \(35 ms\):/, "Move log should record Ochre bot with its 35 ms budget");
+
+console.log(`PASS: All ${SUPPORTED_GODS.length} Pantheon powers, 11 collision scenarios, Bot-vs-Bot asymmetric budgets, Multi-PV, and CSP/hygiene checks verified against real alphasantorini.wasm.`);

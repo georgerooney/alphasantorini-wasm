@@ -16,7 +16,7 @@ async function loadWasm() {
       js_now: () => performance.now(),
     },
   };
-  const response = await fetch("alphasantorini.wasm?v=4");
+  const response = await fetch("alphasantorini.wasm?v=5");
   const buffer = await response.arrayBuffer();
   const { instance } = await WebAssembly.instantiate(buffer, imports);
   wasm = instance.exports;

@@ -1,6 +1,6 @@
 # AlphaSantorini (WebAssembly)
 
-Standalone in-browser engine and single-player arena for *Santorini* across Mortal rules, 10 introductory powers, and 33 Pantheon (2nd Edition) powers (44 total).
+Standalone in-browser engine and arena for *Santorini* across Mortal rules, 10 introductory powers, and 33 Pantheon (2nd Edition) powers (44 total). Supports playing First (Navy), playing Second (Ochre), or watching **Bot vs. Bot** with independent per-seat powers, per-seat search budgets (`15–5,000 ms`), Pause/Resume, and single-turn Step.
 
 Live demo: [lab.georgerooney.com/santorini](https://lab.georgerooney.com/santorini)
 
@@ -18,7 +18,7 @@ Running a 6-block AlphaZero ResNet over 200 MCTS simulations on client CPUs take
 | :--- | :--- | :--- |
 | State representation | 52-byte `CompactSantoriniState` (51-byte wire hex) | 17-stage explicit sub-turn state machine (`STAGE_*`), SplitMix64 Zobrist hashing |
 | Evaluator | `SANTNNUE03` (`2,561 -> 2x256 -> 1`, 4 height buckets) | `int16` clipped-ReLU (`QA = 255, QB = 512`), `44 x 44 = 1,936` ordered god-pair interaction features, 1.25 MiB (`1,315,890` bytes) embedded via `include_bytes!` |
-| Search | Single-threaded PVS alpha-beta + Multi-PV | Transposition table (262,144 entries), killer/history heuristics, LMR, RFP, NMP, singular extensions, threat quiescence, and lossless `Hermes`/`Triton`/`Atalanta`/`Heracles` walk-cycle pruning |
+| Search | Single-threaded PVS alpha-beta + Multi-PV | Per-seat isolated transposition tables (`2 x 131,072` entries so asymmetric Bot-vs-Bot budgets never leak depths across players), killer/history heuristics, LMR, RFP, NMP, singular extensions, threat quiescence, and lossless `Hermes`/`Triton`/`Atalanta`/`Heracles` walk-cycle pruning |
 | Browser runtime | `wasm32-unknown-unknown` + Web Worker | 1.48 MB raw (`907 KB` gzipped), no `SharedArrayBuffer` or `COOP`/`COEP` headers required, strict CSP (`script-src 'self'; style-src 'self'`) |
 
 ## Supported Powers (44)

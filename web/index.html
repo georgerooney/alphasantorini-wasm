@@ -41,36 +41,57 @@
           <h3>Match configuration</h3>
         </div>
         <div class="field">
-          <label>You play</label>
-          <div class="seg" id="side-seg">
-            <button type="button" data-side="0" class="active">First (Navy)</button>
-            <button type="button" data-side="1">Second (Ochre)</button>
+          <label>Mode</label>
+          <div class="seg" id="mode-seg">
+            <button type="button" data-mode="p0" class="active">Play Navy (1st)</button>
+            <button type="button" data-mode="p1">Play Ochre (2nd)</button>
+            <button type="button" data-mode="bots">Bot vs. Bot</button>
+          </div>
+        </div>
+        <div class="seat-box p0">
+          <div class="seat-head">
+            <span class="seat-title">First player (Navy)</span>
+            <span class="seat-role" id="p0-role">You</span>
+          </div>
+          <div class="split-fields">
+            <div class="field">
+              <label for="p0-god">Power</label>
+              <select id="p0-god"></select>
+            </div>
+            <div class="field">
+              <label for="p0-ms" id="p0-ms-label">Hint / analyze (ms)</label>
+              <input id="p0-ms" type="number" min="15" max="5000" step="15" value="150">
+            </div>
+          </div>
+        </div>
+        <div class="seat-box p1">
+          <div class="seat-head">
+            <span class="seat-title">Second player (Ochre)</span>
+            <span class="seat-role" id="p1-role">Bot</span>
+          </div>
+          <div class="split-fields">
+            <div class="field">
+              <label for="p1-god">Power</label>
+              <select id="p1-god"></select>
+            </div>
+            <div class="field">
+              <label for="p1-ms" id="p1-ms-label">Bot search (ms)</label>
+              <input id="p1-ms" type="number" min="15" max="5000" step="15" value="150">
+            </div>
           </div>
         </div>
         <div class="field">
-          <label for="human-god">Your power</label>
-          <select id="human-god"></select>
-        </div>
-        <div class="field">
-          <label for="engine-god">Engine power</label>
-          <select id="engine-god"></select>
-        </div>
-        <div class="split-fields">
-          <div class="field">
-            <label for="time-ms">Search budget (ms)</label>
-            <input id="time-ms" type="number" min="15" max="3000" step="15" value="150">
-          </div>
-          <div class="field">
-            <label for="multipv">Candidate lines</label>
-            <select id="multipv">
-              <option value="1">Top 1</option>
-              <option value="3" selected>Top 3</option>
-              <option value="5">Top 5</option>
-            </select>
-          </div>
+          <label for="multipv">Candidate lines (Hint / Analyze)</label>
+          <select id="multipv">
+            <option value="1">Top 1</option>
+            <option value="3" selected>Top 3</option>
+            <option value="5">Top 5</option>
+          </select>
         </div>
         <div class="row wrap">
           <button type="button" class="btn primary" id="new-game">New game</button>
+          <button type="button" class="btn hidden" id="pause-bots">Pause</button>
+          <button type="button" class="btn hidden" id="step-bot" disabled>Step</button>
           <button type="button" class="btn" id="undo" disabled>Undo</button>
           <button type="button" class="btn" id="hint" disabled>Hint</button>
           <button type="button" class="btn" id="analyze" disabled>Analyze</button>
