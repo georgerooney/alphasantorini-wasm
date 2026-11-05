@@ -76,10 +76,14 @@ for (const file of [
   assert.ok(!txt.includes("cyclades"), `Legacy 'cyclades' reference found in ${file}`);
 }
 
-// Official designer & publisher attribution
+// Official designer & publisher attribution, and clean topbar without internal model subtitle
 assert.ok(
   /Gordon Hamilton/i.test(htmlSrc) && /Roxley/i.test(htmlSrc),
   "index.html must credit Gordon Hamilton and Roxley Games"
+);
+assert.ok(
+  !htmlSrc.includes("SANTNNUE03 · 44 Pantheon powers · WebAssembly") && !htmlSrc.includes("brand-sub"),
+  "index.html topbar should not render the SANTNNUE03 · 44 Pantheon powers · WebAssembly subtitle"
 );
 
 // ---------------------------------------------------------------------------
